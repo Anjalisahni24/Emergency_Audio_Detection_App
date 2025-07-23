@@ -1,0 +1,57 @@
+-------------------Python Environment (Model Training)-----------
+
+# Core ML stack -------------------------------------------------
+tensorflow==2.15.0          # Python 3.11 wheel available
+tensorflow-io==0.35.0
+tensorflow-hub==0.15.0
+keras==2.15.0               # Same minor as TF
+
+# Data / DSP ----------------------------------------------------
+numpy==1.24.4               # Upper-bound imposed by TF 2.15 wheel
+librosa==0.10.1
+SoundFile==0.12.1
+pydub==0.25.1               # Provides AudioSegment
+ffmpeg-python==0.2.0        # Thin wrapper – still need ffmpeg binary
+
+# Data science / utilities -------------------------------------
+pandas==2.1.4
+scikit-learn==1.3.2
+matplotlib==3.8.2
+
+# std-lib ONLY -------------------------------------------------
+os, wave, shutil, random   #already included with Python
+
+-----------------------Android App Requirements------------------
+
+#Development Environment ----------------------------------------
+Android SDK
+Android Studio
+Kotlin support
+
+#SDK Versions ---------------------------------------------------
+Minimum SDK Version: API 23 (Android 6.0)
+Target SDK Version: API 34 (Latest stable)
+Compile SDK Version: API 34
+
+#Required Permissions -------------------------------------------
+RECORD_AUDIO
+SEND_SMS
+ACCESS_FINE_LOCATION
+
+#TensorFlow Lite Models -----------------------------------------
+yamnet_embedding.tflite
+emergency_audio_model.tflite
+Both models must be stored in the app's assets directory
+
+#External Dependencies ------------------------------------------
+Google Play Services - Required for FusedLocationProviderClient (Location Services)
+TarsosDSP - Audio processing library
+TensorFlow Lite - ML inference
+AndroidX Libraries - Core Android components
+Kotlin Coroutines - Asynchronous operations
+
+#Device Requirements --------------------------------------------
+Microphone access
+SMS capability
+GPS/Network location
+Android 6.0+ (API 23)

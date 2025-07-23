@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.*
 import android.telephony.SmsManager
+import android.telephony.SubscriptionManager
 import android.util.Log
 import android.widget.Button
 import android.widget.Toast
@@ -182,6 +183,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         recordToggleButton.text = getString(R.string.stop_listening)
+        recordToggleButton.setBackgroundResource(R.drawable.btn_shape_disabled)
         Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show()
     }
 
@@ -190,6 +192,7 @@ class MainActivity : AppCompatActivity() {
         dispatcher?.stop()
         dispatcher = null
         recordToggleButton.text = getString(R.string.start_listening)
+        recordToggleButton.setBackgroundResource(R.drawable.btn_shape_enabled)
         Toast.makeText(this, "Recording stopped", Toast.LENGTH_SHORT).show()
         dismissAlertDialog()
     }
@@ -223,50 +226,122 @@ class MainActivity : AppCompatActivity() {
         alertDialog?.dismiss()
     }
 
+
     private fun sendAlert() {
-        val sharedPreferences = getSharedPreferences("EmergencyContacts", MODE_PRIVATE)
-        val contactSet = HashSet(sharedPreferences.getStringSet("contacts", emptySet()) ?: emptySet())
+        Log.d("SMS", "sendAlert() called")
 
-        Log.d("ContactsDebug", "Loaded contacts: $contactSet") // ✅ Helps debug
+        // Debug contacts
+        debugContacts()
 
-
-        if (contactSet.isEmpty()) {
-            Toast.makeText(this, "No emergency contacts saved.", Toast.LENGTH_SHORT).show()
+        // Test SMS permission
+        if (!testSMSPermission()) {
+            Toast.makeText(this, "SMS permission required", Toast.LENGTH_SHORT).show()
             return
         }
 
-        var locationText = "Location unavailable"
+        val sharedPreferences = getSharedPreferences("EmergencyContacts", MODE_PRIVATE)
+        val contactSet = HashSet(sharedPreferences.getStringSet("contacts", emptySet()) ?: emptySet())
 
+        Log.d("ContactsDebug", "Loaded contacts: $contactSet")
+
+        if (contactSet.isEmpty()) {
+            Toast.makeText(this, "No emergency contacts saved. Please add contacts first.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        // Get location and send SMS
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             val fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
             fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-                location?.let {
-                    locationText = "https://maps.google.com/?q=${it.latitude},${it.longitude}"
-                }
+                val locationText = location?.let {
+                    "https://maps.google.com/?q=${it.latitude},${it.longitude}"
+                } ?: "Location unavailable"
+
+                Log.d("Location", "Location: $locationText")
                 sendSmsToContacts(contactSet, locationText)
-            }.addOnFailureListener {
-                sendSmsToContacts(contactSet, locationText)
+            }.addOnFailureListener { exception ->
+                Log.e("Location", "Failed to get location", exception)
+                sendSmsToContacts(contactSet, "Location unavailable")
             }
         } else {
-            sendSmsToContacts(contactSet, locationText)
+            Log.w("Location", "Location permission not granted")
+            sendSmsToContacts(contactSet, "Location unavailable")
         }
     }
 
     private fun sendSmsToContacts(contacts: Set<String>, location: String) {
-        val smsManager = SmsManager.getDefault()
-        val message = "🚨 Emergency Detected!\nUser might be in danger.\nLocation: $location"
+        Log.d("SMS", "Attempting to send SMS to ${contacts.size} contacts")
 
-        contacts.forEach { number ->
+        if (contacts.isEmpty()) {
+            Toast.makeText(this, "No emergency contacts found", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Check SMS permission
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "SMS permission not granted", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val smsManager: SmsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            getSystemService(SmsManager::class.java)
+        } else {
+            SmsManager.getDefault()
+        }
+
+        val message = "🚨 EMERGENCY ALERT!\nI may be in danger and need help.\nLocation: $location\nPlease contact me or authorities immediately."
+
+        var successCount = 0
+        var failureCount = 0
+
+        contacts.forEach { contact ->
             try {
-                smsManager.sendTextMessage(number, null, message, null, null)
+                Log.d("SMS", "Sending SMS to: $contact")
+
+                // Split long messages if needed
+                val parts = smsManager.divideMessage(message)
+                if (parts.size == 1) {
+                    smsManager.sendTextMessage(contact, null, message, null, null)
+                } else {
+                    smsManager.sendMultipartTextMessage(contact, null, parts, null, null)
+                }
+
+                successCount++
+                Log.d("SMS", "SMS sent successfully to: $contact")
+
             } catch (e: Exception) {
-                Log.e("SMS", "Failed to send to $number", e)
+                failureCount++
+                Log.e("SMS", "Failed to send SMS to $contact: ${e.message}", e)
             }
         }
 
-        Toast.makeText(this, "🚨 Alerts sent to emergency contacts!", Toast.LENGTH_LONG).show()
+        runOnUiThread {
+            if (successCount > 0) {
+                Toast.makeText(this, "🚨 Emergency alerts sent to $successCount contact(s)!", Toast.LENGTH_LONG).show()
+            }
+            if (failureCount > 0) {
+                Toast.makeText(this, "Failed to send to $failureCount contact(s)", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
+    private fun debugContacts() {
+        val sharedPreferences = getSharedPreferences("EmergencyContacts", MODE_PRIVATE)
+        val contactSet = HashSet(sharedPreferences.getStringSet("contacts", emptySet()) ?: emptySet())
+
+        Log.d("ContactsDebug", "Total contacts: ${contactSet.size}")
+        contactSet.forEachIndexed { index, contact ->
+            Log.d("ContactsDebug", "Contact $index: '$contact'")
+        }
+    }
+
+    private fun testSMSPermission(): Boolean {
+        val hasPermission = ActivityCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
+        Log.d("SMS", "SMS Permission granted: $hasPermission")
+        return hasPermission
+    }
+
+    
     override fun onDestroy() {
         super.onDestroy()
         coroutineScope.cancel()

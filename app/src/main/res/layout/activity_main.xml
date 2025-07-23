@@ -12,11 +12,11 @@
         android:layout_height="wrap_content"
         android:layout_centerHorizontal="true"
         android:layout_marginTop="100dp"
+        android:fontFamily="sans-serif"
         android:text="Emergency Audio Detection"
-        android:textSize="29sp"
-        android:textStyle="bold"
         android:textColor="#080808"
-        android:fontFamily="sans-serif" />
+        android:textSize="29sp"
+        android:textStyle="bold" />
 
     <Button
         android:id="@+id/recordButton"
@@ -32,20 +32,19 @@
         android:background="@drawable/btn_shape_enabled"
         android:elevation="4dp"
         android:fontFamily="sans-serif-black"
-        android:text="Start Recording"
+        android:text="Start Listening"
         android:textSize="16sp" />
+
 
     <Button
         android:id="@+id/manageContactsButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Manage Emergency Contacts"
-        android:layout_marginTop="500dp"
-        android:layout_marginRight = "110dp"
-        android:layout_marginLeft = "110dp"
         android:layout_gravity="center_horizontal"
-        />
-
+        android:layout_marginLeft="110dp"
+        android:layout_marginTop="500dp"
+        android:layout_marginRight="110dp"
+        android:text="Manage Emergency Contacts" />
 
     <TextView
         android:id="@+id/disclaimerText"

@@ -43,6 +43,9 @@ android {
     kotlinOptions {
         jvmTarget = "11"
     }
+    buildFeatures {
+        mlModelBinding = true
+    }
 }
 
 dependencies {
