@@ -38,7 +38,7 @@ class MainActivity : AppCompatActivity() {
     private var autoSendAlertHandler: Handler? = null
     private var autoSendAlertRunnable: Runnable? = null
     private val confidenceWindow = ArrayDeque<Float>() // ✅ ADDED: For smoothing
-    private val smoothingWindowSize = 5
+    private val smoothingWindowSize = 7
 
 
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
@@ -151,15 +151,20 @@ class MainActivity : AppCompatActivity() {
                 val classifierOutput = Array(1) { FloatArray(1) }
                 tflite?.run(classifierInput, classifierOutput)
                 val confidence = classifierOutput[0][0]
+                val cappedConfidence = confidence.coerceAtMost(0.85f)
                 Log.d("InferenceOutput", "Confidence: $confidence")
 
                 // ✅ ADD CONFIDENCE SMOOTHING
-                confidenceWindow.addLast(confidence)
+                confidenceWindow.addLast(cappedConfidence)
                 if (confidenceWindow.size > smoothingWindowSize) {
                     confidenceWindow.removeFirst()
                 }
                 val avgConfidence = confidenceWindow.average().toFloat()
                 Log.d("InferenceOutput", "Smoothed Confidence: $avgConfidence")
+                Log.d("InferenceOutput", "Confidence: $confidence")
+                Log.d("InferenceOutput", "Capped Confidence: $cappedConfidence")
+                Log.d("InferenceOutput", "Smoothed Confidence: $CONFIDENCE_THRESHOLD")
+
 
                 if (avgConfidence > CONFIDENCE_THRESHOLD) {
                     runOnUiThread {
