@@ -140,19 +140,19 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-// Output depends on your model's output shape (likely [1, 1024])
+
                 // Get the embedding
                 val embeddingOutput = FloatArray(1024)
                 yamnet?.run(yamnetInput, embeddingOutput)
 
-// Wrap embeddingOutput for classifier (batch of 1)
+                // Wrap embeddingOutput for classifier (batch of 1)
                 val classifierInput = arrayOf(embeddingOutput)
                 val classifierOutput = Array(1) { FloatArray(1) }
                 tflite?.run(classifierInput, classifierOutput)
                 val confidence = classifierOutput[0][0]
                 Log.d("InferenceOutput", "Confidence: $confidence")
 
-// ✅ ADD CONFIDENCE SMOOTHING
+                // ✅ ADD CONFIDENCE SMOOTHING
                 confidenceWindow.addLast(confidence)
                 if (confidenceWindow.size > smoothingWindowSize) {
                     confidenceWindow.removeFirst()
