@@ -82,7 +82,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         try {
-            tflite = Interpreter(loadModelFile("cnn_with_preprocessing_2.tflite"))
+            tflite = Interpreter(loadModelFile("cnn_audio_classifier_approach (1).tflite"))
             // Log the input tensor shape
             // E.g., [15600] or [1, 15600]
             Log.d("ClassifierInputShape", tflite!!.getInputTensor(0).shape().joinToString())
