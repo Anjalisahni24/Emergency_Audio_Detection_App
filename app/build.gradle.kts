@@ -58,6 +58,9 @@ dependencies {
     implementation("com.google.android.gms:play-services-location:21.0.1")
     implementation("androidx.activity:activity-ktx:1.8.2")
 
+    // TarsosDSP for preprocessing
+    implementation("com.github.JorenSix:TarsosDSP:master-SNAPSHOT")
+
     // TensorFlow Lite
     implementation("org.tensorflow:tensorflow-lite:2.11.0")
     implementation("org.tensorflow:tensorflow-lite-support:0.4.2")

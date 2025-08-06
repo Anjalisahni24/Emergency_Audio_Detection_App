@@ -3,6 +3,8 @@
 
     <!-- Permissions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
@@ -37,6 +39,12 @@
         </activity>
 
         <activity android:name=".contact.ManageContactsActivity" />
+        <service
+            android:name=".AudioRecordingService"
+            android:foregroundServiceType="microphone"
+            android:enabled="true"
+            android:exported="false" />
+
 
     </application>
 

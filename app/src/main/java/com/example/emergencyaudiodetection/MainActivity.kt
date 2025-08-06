@@ -3,18 +3,16 @@ package com.example.emergencyaudiodetection
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.*
 import android.telephony.SmsManager
-import android.telephony.SubscriptionManager
 import android.util.Log
 import android.widget.Button
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import be.tarsos.dsp.AudioDispatcher
-import be.tarsos.dsp.AudioEvent
-import be.tarsos.dsp.AudioProcessor
-import be.tarsos.dsp.io.android.AudioDispatcherFactory
 import com.example.emergencyaudiodetection.contact.ManageContactsActivity
 import com.google.android.gms.location.LocationServices
 import kotlinx.coroutines.*
@@ -23,35 +21,35 @@ import java.io.FileInputStream
 import java.io.IOException
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
+import java.util.ArrayDeque
+import be.tarsos.dsp.AudioEvent
+import be.tarsos.dsp.AudioProcessor
+import be.tarsos.dsp.mfcc.MFCC
+import be.tarsos.dsp.util.fft.FFT
+import kotlin.math.log10
+import kotlin.math.pow
+
 
 class MainActivity : AppCompatActivity() {
-
     private lateinit var recordToggleButton: Button
     private lateinit var manageContactsButton: Button
-
-    private var dispatcher: AudioDispatcher? = null
     private var isRecording = false
     private var tflite: Interpreter? = null
-    private var yamnet: Interpreter? = null
-
     private var alertDialog: android.app.AlertDialog? = null
     private var autoSendAlertHandler: Handler? = null
     private var autoSendAlertRunnable: Runnable? = null
-    private val confidenceWindow = ArrayDeque<Float>() // ✅ ADDED: For smoothing
+    private val confidenceWindow = ArrayDeque<Float>()
     private val smoothingWindowSize = 7
-
-
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
 
     companion object {
         private const val SAMPLE_RATE = 16000
-        private const val INPUT_LENGTH = 15600
-        private const val YAMNET_EMBEDDING_SIZE = 1024
-        private const val CONFIDENCE_THRESHOLD = 0.8f
+        private const val DURATION_SECONDS = 2
+        private const val INPUT_LENGTH = SAMPLE_RATE * DURATION_SECONDS // 32000 samples
+        private const val CONFIDENCE_THRESHOLD = 0.9f
         private const val PERMISSION_REQUEST_CODE = 100
         private const val AUTO_SEND_DELAY_MS = 10000L // 10 seconds
     }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -84,12 +82,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         try {
-            yamnet = Interpreter(loadModelFile("yamnet_embedding.tflite"))
-            tflite = Interpreter(loadModelFile("emergency_audio_model.tflite"))
+            tflite = Interpreter(loadModelFile("cnn_with_preprocessing_2.tflite"))
             // Log the input tensor shape
-            val inputShape = yamnet!!.getInputTensor(0).shape()
             // E.g., [15600] or [1, 15600]
-            Log.d("YAMNetOutputShape", yamnet!!.getOutputTensor(0).shape().joinToString())
             Log.d("ClassifierInputShape", tflite!!.getInputTensor(0).shape().joinToString())
             Log.d("ClassifierOutputShape", tflite!!.getOutputTensor(0).shape().joinToString())
 
@@ -105,6 +100,102 @@ class MainActivity : AppCompatActivity() {
                 ActivityCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED &&
                 ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
     }
+    private fun extractMelSpectrogram(
+        audioBuffer: FloatArray,
+        sampleRate: Int = 16000,
+        nMels: Int = 40,
+        nFFT: Int = 512,
+        hopLength: Int = 256
+    ): Array<Array<Array<FloatArray>>> {
+
+        val fft = FFT(nFFT)
+        val windowSize = nFFT
+        val stepSize = hopLength
+        val totalFrames = (audioBuffer.size - windowSize) / stepSize
+
+        val powerSpectrogram = Array(totalFrames) { FloatArray(nFFT / 2) }
+
+        for (i in 0 until totalFrames) {
+            val start = i * stepSize
+            val frame = FloatArray(windowSize) { j ->
+                if (start + j < audioBuffer.size) audioBuffer[start + j] else 0f
+            }
+
+            // Prepare real + imaginary parts for FFT
+            val fftBuffer = FloatArray(nFFT * 2)
+            for (j in frame.indices) {
+                fftBuffer[2 * j] = frame[j] // real
+                fftBuffer[2 * j + 1] = 0f    // imaginary
+            }
+
+            fft.forwardTransform(fftBuffer)
+            fft.modulus(fftBuffer, powerSpectrogram[i])
+        }
+
+        // Build mel filterbank
+        val melFilterBank = createMelFilterBank(nFFT / 2, sampleRate, nMels)
+        val melSpectrogram = Array(nMels) { FloatArray(totalFrames) }
+
+        for (t in 0 until totalFrames) {
+            for (m in 0 until nMels) {
+                var melEnergy = 0f
+                for (k in melFilterBank[m].indices) {
+                    melEnergy += melFilterBank[m][k] * powerSpectrogram[t][k]
+                }
+                melSpectrogram[m][t] = log10(melEnergy + 1e-6f)
+            }
+        }
+
+        // Pad or crop to 63 frames
+        val paddedMel = Array(nMels) { row ->
+            FloatArray(63) { col ->
+                if (col < melSpectrogram[0].size) melSpectrogram[row][col] else 0f
+            }
+        }
+
+        return arrayOf(Array(nMels) { i -> Array(63) { j -> floatArrayOf(paddedMel[i][j]) } })
+    }
+
+    private fun createMelFilterBank(
+        nFftBins: Int,
+        sampleRate: Int,
+        nMels: Int
+    ): Array<FloatArray> {
+
+        fun hzToMel(hz: Float): Float = (2595 * log10(1 + hz / 700))
+        fun melToHz(mel: Float): Float = 700f * (10f.pow(mel / 2595f) - 1f)
+
+
+        val melMin = hzToMel(0f)
+        val melMax = hzToMel(sampleRate / 2f)
+        val melPoints = FloatArray(nMels + 2) { i ->
+            melToHz(melMin + (i.toFloat() / (nMels + 1)) * (melMax - melMin))
+        }
+
+        val fftFrequencies = FloatArray(nFftBins) { i -> i * sampleRate.toFloat() / (nFftBins * 2) }
+
+        val filterBank = Array(nMels) { FloatArray(nFftBins) }
+
+        for (m in 1 until melPoints.size - 1) {
+            val fLeft = melPoints[m - 1]
+            val fCenter = melPoints[m]
+            val fRight = melPoints[m + 1]
+
+            for (k in 0 until nFftBins) {
+                val freq = fftFrequencies[k]
+                val weight = when {
+                    freq < fLeft -> 0f
+                    freq < fCenter -> (freq - fLeft) / (fCenter - fLeft)
+                    freq < fRight -> (fRight - freq) / (fRight - fCenter)
+                    else -> 0f
+                }
+                filterBank[m - 1][k] = weight
+            }
+        }
+
+        return filterBank
+    }
+
 
     private fun loadModelFile(modelName: String): MappedByteBuffer {
         assets.openFd(modelName).apply {
@@ -117,85 +208,94 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRecording() {
+        // Permission check (can be kept as is)
         if (!hasAllPermissions()) {
             Toast.makeText(this, "Missing permissions.", Toast.LENGTH_LONG).show()
             return
         }
-        if (yamnet == null || tflite == null) {
-            Toast.makeText(this, "Models not loaded!", Toast.LENGTH_LONG).show()
+
+        if (tflite == null) {
+            Toast.makeText(this, "Model not loaded!", Toast.LENGTH_LONG).show()
             return
         }
 
-        Log.d("Recording", "Start recording")
-        dispatcher = AudioDispatcherFactory.fromDefaultMicrophone(SAMPLE_RATE, 15360, 7680)
-
-        dispatcher?.addAudioProcessor(object : AudioProcessor {
-            override fun processingFinished() {}
-
-            override fun process(audioEvent: AudioEvent): Boolean = try {
-                val audioBuffer = audioEvent.floatBuffer
-                val yamnetInput = FloatArray(INPUT_LENGTH)
-                for (i in audioBuffer.indices) {
-                    if (i < INPUT_LENGTH) {
-                        yamnetInput[i] = audioBuffer[i]
-                    }
-                }
-
-
-                // Get the embedding
-                val embeddingOutput = FloatArray(1024)
-                yamnet?.run(yamnetInput, embeddingOutput)
-
-                // Wrap embeddingOutput for classifier (batch of 1)
-                val classifierInput = arrayOf(embeddingOutput)
-                val classifierOutput = Array(1) { FloatArray(1) }
-                tflite?.run(classifierInput, classifierOutput)
-                val confidence = classifierOutput[0][0]
-                val cappedConfidence = confidence.coerceAtMost(0.85f)
-                Log.d("InferenceOutput", "Confidence: $confidence")
-
-                // ✅ ADD CONFIDENCE SMOOTHING
-                confidenceWindow.addLast(cappedConfidence)
-                if (confidenceWindow.size > smoothingWindowSize) {
-                    confidenceWindow.removeFirst()
-                }
-                val avgConfidence = confidenceWindow.average().toFloat()
-                Log.d("InferenceOutput", "Smoothed Confidence: $avgConfidence")
-                Log.d("InferenceOutput", "Confidence: $confidence")
-                Log.d("InferenceOutput", "Capped Confidence: $cappedConfidence")
-                Log.d("InferenceOutput", "Smoothed Confidence: $CONFIDENCE_THRESHOLD")
-
-
-                if (avgConfidence > CONFIDENCE_THRESHOLD) {
-                    runOnUiThread {
-                        Toast.makeText(applicationContext, "🚨 Emergency Sound Detected!", Toast.LENGTH_SHORT).show()
-                        if (alertDialog?.isShowing != true) {
-                            triggerAlert()
-                        }
-                    }
-                }
-
-                true
-            } catch (e: Exception) {
-                Log.e("InferenceError", "YAMNet failed:", e)
-                true
-            }
-        })
-
-        isRecording = true
-        coroutineScope.launch {
-            dispatcher?.run()
+        // Explicit check before AudioRecord instantiation (add this)
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), PERMISSION_REQUEST_CODE)
+            Toast.makeText(this, "Audio recording permission required", Toast.LENGTH_LONG).show()
+            return
         }
 
+        val bufferSize = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+
+        // Wrap AudioRecord instantiation in try-catch to handle SecurityException:
+        val audioRecord: AudioRecord
+        try {
+            audioRecord = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize
+            )
+        } catch (se: SecurityException) {
+            Log.e("AudioRecord", "Permission denied for AudioRecord", se)
+            Toast.makeText(this, "Audio recording permission denied", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val shortBuffer = ShortArray(INPUT_LENGTH) // 2 second buffer at 16kHz
+
+        audioRecord.startRecording()
+        isRecording = true
         recordToggleButton.text = getString(R.string.stop_listening)
         recordToggleButton.setBackgroundResource(R.drawable.btn_shape_disabled)
         Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show()
+
+        coroutineScope.launch {
+            while (isRecording) {
+                val readSamples = audioRecord.read(shortBuffer, 0, INPUT_LENGTH)
+                if (readSamples == INPUT_LENGTH) {
+                    val floatBuffer = FloatArray(INPUT_LENGTH) { i -> shortBuffer[i] / 32767.0f }
+
+                    // Wrap floatBuffer into a 2D array for tflite input
+                    val inputTensor = extractMelSpectrogram(floatBuffer)
+                    val output = Array(1) { FloatArray(1) }
+
+                    try {
+                        tflite?.run(inputTensor, output)
+                        val confidence = output[0][0]
+                        confidenceWindow.addLast(confidence)
+                        if (confidenceWindow.size > smoothingWindowSize) {
+                            confidenceWindow.removeFirst()
+                        }
+                        val avgConfidence = confidenceWindow.average().toFloat()
+                        Log.d("InferenceOutput", "Smoothed Confidence: $avgConfidence")
+                        if (avgConfidence > CONFIDENCE_THRESHOLD) {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(applicationContext, "🚨 Emergency Sound Detected!", Toast.LENGTH_SHORT).show()
+                                if (alertDialog?.isShowing != true) {
+                                    triggerAlert()
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("InferenceError", "Failed to run inference", e)
+                    }
+                }
+            }
+            audioRecord.stop()
+            audioRecord.release()
+        }
     }
+
 
     private fun stopRecording() {
         isRecording = false
-        dispatcher?.stop()
-        dispatcher = null
         recordToggleButton.text = getString(R.string.start_listening)
         recordToggleButton.setBackgroundResource(R.drawable.btn_shape_enabled)
         Toast.makeText(this, "Recording stopped", Toast.LENGTH_SHORT).show()
@@ -346,13 +446,11 @@ class MainActivity : AppCompatActivity() {
         return hasPermission
     }
 
-    
+
     override fun onDestroy() {
         super.onDestroy()
         coroutineScope.cancel()
-        yamnet?.close()
         tflite?.close()
-        dispatcher?.stop()
         autoSendAlertHandler?.removeCallbacks(autoSendAlertRunnable ?: return)
     }
 
@@ -365,3 +463,4 @@ class MainActivity : AppCompatActivity() {
         }
     }
 }
+
